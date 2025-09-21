@@ -6,6 +6,7 @@ FastAPI application with OpenAI streaming integration and PDF processing
 import os
 import json
 import tempfile
+import pickle
 from datetime import datetime
 from typing import AsyncGenerator, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -44,7 +45,11 @@ embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
 # Global vector store for PDF content
 pdf_vector_store: Dict[str, FAISS] = {}
 
-# Global storage for medical documents
+# Storage configuration
+STORAGE_DIR = "/tmp" if os.getenv("VERCEL") else "./storage"
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
+# Global storage for medical documents (now using file storage)
 medical_vector_store: Dict[str, FAISS] = {}
 medical_documents: Dict[str, Dict[str, Any]] = {}
 
@@ -66,6 +71,37 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=200,
     length_function=len,
 )
+
+# Helper functions for file storage
+def save_vector_store(filename: str, vector_store: FAISS):
+    """Save vector store to file"""
+    file_path = os.path.join(STORAGE_DIR, f"{filename}_vector.pkl")
+    with open(file_path, 'wb') as f:
+        pickle.dump(vector_store, f)
+
+def load_vector_store(filename: str) -> FAISS:
+    """Load vector store from file"""
+    file_path = os.path.join(STORAGE_DIR, f"{filename}_vector.pkl")
+    with open(file_path, 'rb') as f:
+        return pickle.load(f)
+
+def save_document_info(filename: str, doc_info: Dict[str, Any]):
+    """Save document info to file"""
+    file_path = os.path.join(STORAGE_DIR, f"{filename}_info.json")
+    with open(file_path, 'w') as f:
+        json.dump(doc_info, f)
+
+def load_document_info(filename: str) -> Dict[str, Any]:
+    """Load document info from file"""
+    file_path = os.path.join(STORAGE_DIR, f"{filename}_info.json")
+    with open(file_path, 'r') as f:
+        return json.load(f)
+
+def document_exists(filename: str) -> bool:
+    """Check if document files exist"""
+    vector_path = os.path.join(STORAGE_DIR, f"{filename}_vector.pkl")
+    info_path = os.path.join(STORAGE_DIR, f"{filename}_info.json")
+    return os.path.exists(vector_path) and os.path.exists(info_path)
 
 # Pydantic models
 class ChatMessage(BaseModel):
@@ -469,15 +505,16 @@ async def upload_medical_document(file: UploadFile = File(...)):
         # Create vector store
         vector_store = FAISS.from_documents(documents, embeddings)
         
-        # Store vector store and document info
-        medical_vector_store[file.filename] = vector_store
-        medical_documents[file.filename] = {
+        # Store vector store and document info to files
+        save_vector_store(file.filename, vector_store)
+        doc_info = {
             "filename": file.filename,
             "pages": pages,
             "chunks": len(texts),
             "category": "",  # Will be set after first question
             "conversation_history": []
         }
+        save_document_info(file.filename, doc_info)
         
         return MedicalUploadResponse(
             status="success",
@@ -507,16 +544,16 @@ async def query_medical_document_stream(request: MedicalQueryRequest):
         )
     
     # Check if document is uploaded
-    if request.filename not in medical_vector_store:
+    if not document_exists(request.filename):
         raise HTTPException(
             status_code=404,
             detail=f"Medical document '{request.filename}' not found. Please upload it first."
         )
     
     try:
-        # Get vector store for this document
-        vector_store = medical_vector_store[request.filename]
-        doc_info = medical_documents[request.filename]
+        # Load vector store and document info from files
+        vector_store = load_vector_store(request.filename)
+        doc_info = load_document_info(request.filename)
         
         # Search for relevant chunks
         docs = vector_store.similarity_search(request.question, k=3)
@@ -716,6 +753,9 @@ Respond with only a number between 0.0 and 1.0."""
                     "timestamp": str(datetime.now())
                 })
                 
+                # Save updated document info back to file
+                save_document_info(request.filename, doc_info)
+                
             except Exception as e:
                 error_msg = f"Error in OpenAI API: {str(e)}"
                 yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
@@ -749,14 +789,14 @@ async def export_medical_document(request: MedicalExportRequest):
         )
     
     # Check if document exists
-    if request.filename not in medical_documents:
+    if not document_exists(request.filename):
         raise HTTPException(
             status_code=404,
             detail=f"Medical document '{request.filename}' not found."
         )
     
     try:
-        doc_info = medical_documents[request.filename]
+        doc_info = load_document_info(request.filename)
         
         # Generate summary using ChatGPT
         conversation_text = "\n".join([
@@ -837,9 +877,9 @@ async def import_medical_document(request: MedicalImportRequest):
         # Create vector store
         vector_store = FAISS.from_documents(documents, embeddings)
         
-        # Store vector store and document info
-        medical_vector_store[request.filename] = vector_store
-        medical_documents[request.filename] = {
+        # Store vector store and document info to files
+        save_vector_store(request.filename, vector_store)
+        doc_info = {
             "filename": request.filename,
             "pages": 0,  # Unknown for imported documents
             "chunks": len(texts),
@@ -849,6 +889,7 @@ async def import_medical_document(request: MedicalImportRequest):
             "title": request.title,
             "journal_source": request.journal_source
         }
+        save_document_info(request.filename, doc_info)
         
         return {
             "status": "success",

@@ -40,6 +40,9 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Storage files (medical documents and vector stores)
+storage/
+
 # IDE files
 .vscode/
 .idea/
