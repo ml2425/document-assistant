@@ -6,6 +6,7 @@ FastAPI application with OpenAI streaming integration and PDF processing
 import os
 import json
 import tempfile
+from datetime import datetime
 from typing import AsyncGenerator, Dict, Any
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +44,22 @@ embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
 # Global vector store for PDF content
 pdf_vector_store: Dict[str, FAISS] = {}
 
+# Global storage for medical documents
+medical_vector_store: Dict[str, FAISS] = {}
+medical_documents: Dict[str, Dict[str, Any]] = {}
+
+# Medical categories
+MEDICAL_CATEGORIES = [
+    "Clinical Diagnosis",
+    "Clinical Treatment", 
+    "Clinical Signs and Symptoms",
+    "Research",
+    "Therapeutics",
+    "Physiology",
+    "Genetic",
+    "Others"
+]
+
 # Text splitter for chunking PDF content
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
@@ -73,6 +90,29 @@ class PDFUploadResponse(BaseModel):
 class PDFQueryRequest(BaseModel):
     question: str
     filename: str
+
+class MedicalUploadResponse(BaseModel):
+    status: str
+    message: str
+    filename: str
+    pages: int
+    chunks: int
+    category: str = ""
+
+class MedicalQueryRequest(BaseModel):
+    question: str
+    filename: str
+
+class MedicalExportRequest(BaseModel):
+    filename: str
+    title: str
+    journal_source: str
+
+class MedicalImportRequest(BaseModel):
+    filename: str
+    title: str
+    journal_source: str
+    conversation_history: list
 
 # Health check endpoint
 @app.get("/api/health", response_model=HealthResponse)
@@ -375,6 +415,456 @@ async def query_pdf_stream(request: PDFQueryRequest):
             detail=f"Internal server error: {str(e)}"
         )
 
+# Medical document upload endpoint
+@app.post("/api/upload-medical", response_model=MedicalUploadResponse)
+async def upload_medical_document(file: UploadFile = File(...)):
+    """Upload and process medical document"""
+    
+    # Check if API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        )
+    
+    # Validate file type
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed"
+        )
+    
+    try:
+        # Read PDF content
+        pdf_content = await file.read()
+        
+        # Extract text from PDF
+        pdf_text = ""
+        pages = 0
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            tmp_file.write(pdf_content)
+            tmp_file.flush()
+            
+            with open(tmp_file.name, 'rb') as pdf_file:
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                pages = len(pdf_reader.pages)
+                
+                for page in pdf_reader.pages:
+                    pdf_text += page.extract_text() + "\n"
+        
+        # Clean up temporary file
+        os.unlink(tmp_file.name)
+        
+        if not pdf_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No text content found in PDF"
+            )
+        
+        # Split text into chunks
+        texts = text_splitter.split_text(pdf_text)
+        documents = [Document(page_content=text) for text in texts]
+        
+        # Create vector store
+        vector_store = FAISS.from_documents(documents, embeddings)
+        
+        # Store vector store and document info
+        medical_vector_store[file.filename] = vector_store
+        medical_documents[file.filename] = {
+            "filename": file.filename,
+            "pages": pages,
+            "chunks": len(texts),
+            "category": "",  # Will be set after first question
+            "conversation_history": []
+        }
+        
+        return MedicalUploadResponse(
+            status="success",
+            message=f"Medical document processed successfully",
+            filename=file.filename,
+            pages=pages,
+            chunks=len(texts),
+            category=""
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing medical document: {str(e)}"
+        )
+
+# Medical document query endpoint with streaming
+@app.post("/api/query-medical")
+async def query_medical_document_stream(request: MedicalQueryRequest):
+    """Query medical document content with streaming response"""
+    
+    # Check if API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        )
+    
+    # Check if document is uploaded
+    if request.filename not in medical_vector_store:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Medical document '{request.filename}' not found. Please upload it first."
+        )
+    
+    try:
+        # Get vector store for this document
+        vector_store = medical_vector_store[request.filename]
+        doc_info = medical_documents[request.filename]
+        
+        # Search for relevant chunks
+        docs = vector_store.similarity_search(request.question, k=3)
+        
+        # Prepare context from relevant chunks
+        context = "\n\n".join([doc.page_content for doc in docs])
+        
+        # Create streaming response
+        def generate_response() -> AsyncGenerator[str, None]:
+            try:
+                # Check if we have relevant context
+                if not context.strip():
+                    # No relevant content found, use ChatGPT directly
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": f"Question: {request.question}\n\nNote: This question is not related to any uploaded medical document."
+                        }
+                    ]
+                    
+                    stream = openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=messages,
+                        stream=True,
+                        temperature=0.7,
+                        max_tokens=1000
+                    )
+                    
+                    # Send note that this is from ChatGPT
+                    yield f"data: {json.dumps({'content': '[Note: This answer is from ChatGPT, not from your medical document]\n\n', 'done': False})}\n\n"
+                    
+                    for chunk in stream:
+                        if chunk.choices[0].delta.content is not None:
+                            content = chunk.choices[0].delta.content
+                            yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                    
+                    yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+                    
+                else:
+                    # We have relevant context, implement medical logic
+                    # First, categorize if this is the first question
+                    if not doc_info["category"]:
+                        category_prompt = f"""Based on the following medical document content and the user's question, categorize this document into one of these categories:
+{', '.join(MEDICAL_CATEGORIES)}
+
+Document content sample: {context[:500]}...
+User question: {request.question}
+
+Respond with only the category name."""
+                        
+                        category_response = openai_client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[{"role": "user", "content": category_prompt}],
+                            temperature=0.3,
+                            max_tokens=50
+                        )
+                        
+                        category = category_response.choices[0].message.content.strip()
+                        if category not in MEDICAL_CATEGORIES:
+                            category = "Others"
+                        
+                        doc_info["category"] = category
+                    
+                    # Now assess quality and respond
+                    quality_prompt = f"""Rate the semantic similarity between the document content and the user's question on a scale of 0.0 to 1.0.
+
+Document content: {context}
+User question: {request.question}
+
+Respond with only a number between 0.0 and 1.0."""
+                    
+                    quality_response = openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[{"role": "user", "content": quality_prompt}],
+                        temperature=0.1,
+                        max_tokens=10
+                    )
+                    
+                    try:
+                        quality_score = float(quality_response.choices[0].message.content.strip())
+                    except:
+                        quality_score = 0.5  # Default to average
+                    
+                    # Determine response strategy based on quality
+                    if quality_score >= 0.7:  # Good
+                        # Use PDF content only
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": "You are a medical assistant. Answer based on the provided medical document content. Include appropriate medical disclaimers."
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}\n\nNote: This analysis is based on the uploaded medical document and should not replace professional medical advice."
+                            }
+                        ]
+                        
+                        stream = openai_client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=messages,
+                            stream=True,
+                            temperature=0.7,
+                            max_tokens=1000
+                        )
+                        
+                        for chunk in stream:
+                            if chunk.choices[0].delta.content is not None:
+                                content = chunk.choices[0].delta.content
+                                yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        
+                        yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+                        
+                    elif quality_score >= 0.4:  # Average
+                        # Combine PDF and ChatGPT
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": "You are a medical assistant. Answer based on the provided medical document content. If the document doesn't have sufficient information, respond with exactly: 'MEDICAL_INSUFFICIENT_INFO' and then provide what information you can from the document."
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}"
+                            }
+                        ]
+                        
+                        response = openai_client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=messages,
+                            temperature=0.7,
+                            max_tokens=1000
+                        )
+                        
+                        medical_response = response.choices[0].message.content
+                        
+                        if "MEDICAL_INSUFFICIENT_INFO" in medical_response:
+                            clean_response = medical_response.replace("MEDICAL_INSUFFICIENT_INFO", "").strip()
+                            
+                            if clean_response:
+                                yield f"data: {json.dumps({'content': clean_response, 'done': False})}\n\n"
+                            
+                            yield f"data: {json.dumps({'content': '\n\n[Additional information from ChatGPT:]\n\n', 'done': False})}\n\n"
+                            
+                            fallback_messages = [
+                                {
+                                    "role": "user",
+                                    "content": f"Question: {request.question}\n\nNote: This is general medical information and should not replace professional medical advice."
+                                }
+                            ]
+                            
+                            stream = openai_client.chat.completions.create(
+                                model="gpt-3.5-turbo",
+                                messages=fallback_messages,
+                                stream=True,
+                                temperature=0.7,
+                                max_tokens=1000
+                            )
+                            
+                            for chunk in stream:
+                                if chunk.choices[0].delta.content is not None:
+                                    content = chunk.choices[0].delta.content
+                                    yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                            
+                            yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'content': medical_response, 'done': True})}\n\n"
+                    
+                    else:  # Poor (quality_score < 0.4)
+                        # Use ChatGPT only
+                        messages = [
+                            {
+                                "role": "user",
+                                "content": f"Question: {request.question}\n\nNote: This is general medical information and should not replace professional medical advice."
+                            }
+                        ]
+                        
+                        yield f"data: {json.dumps({'content': '[Note: This answer is from ChatGPT, not from your medical document]\n\n', 'done': False})}\n\n"
+                        
+                        stream = openai_client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=messages,
+                            stream=True,
+                            temperature=0.7,
+                            max_tokens=1000
+                        )
+                        
+                        for chunk in stream:
+                            if chunk.choices[0].delta.content is not None:
+                                content = chunk.choices[0].delta.content
+                                yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        
+                        yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
+                
+                # Store conversation in document info
+                doc_info["conversation_history"].append({
+                    "question": request.question,
+                    "quality_score": quality_score if 'quality_score' in locals() else 0.0,
+                    "timestamp": str(datetime.now())
+                })
+                
+            except Exception as e:
+                error_msg = f"Error in OpenAI API: {str(e)}"
+                yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+        
+        return StreamingResponse(
+            generate_response(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/plain; charset=utf-8"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+# Medical document export endpoint
+@app.post("/api/export-medical")
+async def export_medical_document(request: MedicalExportRequest):
+    """Export medical document conversation as JSON"""
+    
+    # Check if API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        )
+    
+    # Check if document exists
+    if request.filename not in medical_documents:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Medical document '{request.filename}' not found."
+        )
+    
+    try:
+        doc_info = medical_documents[request.filename]
+        
+        # Generate summary using ChatGPT
+        conversation_text = "\n".join([
+            f"Q: {conv['question']}" for conv in doc_info["conversation_history"]
+        ])
+        
+        summary_prompt = f"""Summarize the following medical document conversation in 2-3 sentences:
+
+Document: {request.filename}
+Category: {doc_info['category']}
+Conversations:
+{conversation_text}
+
+Provide a concise summary of the discussion."""
+        
+        summary_response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": summary_prompt}],
+            temperature=0.7,
+            max_tokens=200
+        )
+        
+        conversation_summary = summary_response.choices[0].message.content
+        
+        # Create export JSON
+        export_data = {
+            "document": {
+                "filename": request.filename,
+                "category": doc_info["category"],
+                "title": request.title,
+                "journal_source": request.journal_source,
+                "upload_date": doc_info.get("upload_date", ""),
+                "pages": doc_info["pages"],
+                "chunks": doc_info["chunks"]
+            },
+            "conversation_summary": conversation_summary,
+            "conversation": doc_info["conversation_history"],
+            "metadata": {
+                "export_date": str(datetime.now()),
+                "total_questions": len(doc_info["conversation_history"])
+            }
+        }
+        
+        return export_data
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error exporting medical document: {str(e)}"
+        )
+
+# Medical document import endpoint
+@app.post("/api/import-medical")
+async def import_medical_document(request: MedicalImportRequest):
+    """Import medical document conversation from JSON"""
+    
+    # Check if API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        )
+    
+    try:
+        # Validate the import data
+        if not request.filename or not request.title:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid import data: filename and title are required"
+            )
+        
+        # Create a mock vector store (since we don't have the original PDF)
+        # We'll use a simple text-based approach for imported documents
+        mock_text = f"Imported medical document: {request.title}\nSource: {request.journal_source}\nFilename: {request.filename}"
+        texts = text_splitter.split_text(mock_text)
+        documents = [Document(page_content=text) for text in texts]
+        
+        # Create vector store
+        vector_store = FAISS.from_documents(documents, embeddings)
+        
+        # Store vector store and document info
+        medical_vector_store[request.filename] = vector_store
+        medical_documents[request.filename] = {
+            "filename": request.filename,
+            "pages": 0,  # Unknown for imported documents
+            "chunks": len(texts),
+            "category": "Imported Document",
+            "conversation_history": request.conversation_history,
+            "imported": True,
+            "title": request.title,
+            "journal_source": request.journal_source
+        }
+        
+        return {
+            "status": "success",
+            "message": f"Medical document '{request.filename}' imported successfully",
+            "filename": request.filename,
+            "title": request.title,
+            "journal_source": request.journal_source,
+            "conversation_count": len(request.conversation_history)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error importing medical document: {str(e)}"
+        )
+
 # Root endpoint
 @app.get("/")
 async def root():
@@ -387,6 +877,10 @@ async def root():
             "chat": "/api/chat",
             "upload_pdf": "/api/upload-pdf",
             "query_pdf": "/api/query-pdf",
+            "upload_medical": "/api/upload-medical",
+            "query_medical": "/api/query-medical",
+            "export_medical": "/api/export-medical",
+            "import_medical": "/api/import-medical",
             "health": "/api/health",
             "debug": "/api/debug"
         }

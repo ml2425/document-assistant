@@ -4,6 +4,9 @@ import { useState } from 'react'
 import ChatInterface from './components/ChatInterface'
 import PDFUpload from './components/PDFUpload'
 import PDFChatInterface from './components/PDFChatInterface'
+import MedicalUpload from './components/MedicalUpload'
+import MedicalChatInterface from './components/MedicalChatInterface'
+import MedicalExportModal from './components/MedicalExportModal'
 
 type TabType = 'chat' | 'pdf' | 'medical'
 
@@ -13,10 +16,19 @@ interface PDFData {
   chunks: number
 }
 
+interface MedicalData {
+  filename: string
+  pages: number
+  chunks: number
+  category: string
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<TabType>('chat')
   const [pdfData, setPDFData] = useState<PDFData | null>(null)
+  const [medicalData, setMedicalData] = useState<MedicalData | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [showExportModal, setShowExportModal] = useState(false)
 
   const handleUploadSuccess = (filename: string, pages: number, chunks: number) => {
     setPDFData({ filename, pages, chunks })
@@ -29,10 +41,95 @@ export default function Home() {
     setUploadError(error)
   }
 
+  const handleMedicalUploadSuccess = (filename: string, pages: number, chunks: number, category: string) => {
+    setMedicalData({ filename, pages, chunks, category })
+    setUploadError(null)
+    // Switch to medical chat after successful upload
+    setActiveTab('medical')
+  }
+
+  const handleMedicalUploadError = (error: string) => {
+    setUploadError(error)
+  }
+
+  const handleExport = async (title: string, journalSource: string) => {
+    if (!medicalData) return
+
+    try {
+      const response = await fetch('/api/export-medical', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filename: medicalData.filename,
+          title: title,
+          journal_source: journalSource
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Export failed')
+      }
+
+      const data = await response.json()
+      
+      // Create and download JSON file
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${medicalData.filename}_medical_export.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      
+    } catch (error) {
+      console.error('Export error:', error)
+      throw error
+    }
+  }
+
+  const handleImport = async (importData: any) => {
+    try {
+      const response = await fetch('/api/import-medical', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filename: importData.document.filename,
+          title: importData.document.title,
+          journal_source: importData.document.journal_source,
+          conversation_history: importData.conversation
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Import failed')
+      }
+
+      const result = await response.json()
+      
+      // Update the medical data with imported information
+      setMedicalData({
+        filename: result.filename,
+        pages: 0, // Unknown for imported documents
+        chunks: 0, // Unknown for imported documents
+        category: 'Imported Document'
+      })
+      
+    } catch (error) {
+      console.error('Import error:', error)
+      throw error
+    }
+  }
+
   const tabs = [
     { id: 'chat' as TabType, label: 'General Chat', icon: '💬' },
     { id: 'pdf' as TabType, label: 'PDF Upload', icon: '📄' },
-    { id: 'medical' as TabType, label: 'Medical Analysis', icon: '🏥' }
+    { id: 'medical' as TabType, label: 'Medical Documents', icon: '🏥' }
   ]
 
   return (
@@ -44,7 +141,7 @@ export default function Home() {
             ChatGPT Clone
           </h1>
           <p className="text-gray-600 mt-1">
-            Phase 2: Chat, PDF Analysis & Medical Analysis
+            Phase 3: Chat, PDF Analysis & Medical Documents
           </p>
         </div>
       </header>
@@ -94,13 +191,23 @@ export default function Home() {
           )}
           
           {activeTab === 'medical' && (
-            <div className="p-6 text-center">
-              <div className="text-6xl mb-4">🏥</div>
-              <h2 className="text-xl font-semibold mb-2">Medical Analysis</h2>
-              <p className="text-gray-600">
-                Phase 3: Medical analysis functionality coming soon!
-              </p>
-            </div>
+            <>
+              {!medicalData ? (
+                <MedicalUpload 
+                  onUploadSuccess={handleMedicalUploadSuccess}
+                  onUploadError={handleMedicalUploadError}
+                />
+              ) : (
+                <MedicalChatInterface 
+                  filename={medicalData.filename}
+                  pages={medicalData.pages}
+                  chunks={medicalData.chunks}
+                  category={medicalData.category}
+                  onExport={() => setShowExportModal(true)}
+                  onImport={handleImport}
+                />
+              )}
+            </>
           )}
         </div>
       </div>
@@ -113,6 +220,16 @@ export default function Home() {
           </p>
         </div>
       </footer>
+
+      {/* Export Modal */}
+      {medicalData && (
+        <MedicalExportModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          filename={medicalData.filename}
+          onExport={handleExport}
+        />
+      )}
     </main>
   )
 }
