@@ -26,8 +26,8 @@ pydantic==2.11.4
 # File upload handling
 python-multipart==0.0.18
 
-# Numerical computing
-numpy==2.3.3
+# Numerical computing (compatible with langchain)
+numpy>=1.21.0,<2.0.0
 
 # Additional dependencies for vector operations
 faiss-cpu==1.8.0
