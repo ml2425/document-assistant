@@ -30,4 +30,4 @@ python-multipart==0.0.18
 numpy==2.3.3
 
 # Additional dependencies for vector operations
-faiss-cpu==1.7.4
+faiss-cpu==1.8.0
