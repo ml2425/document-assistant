@@ -1,0 +1,56 @@
+# Ignore port folder and its contents
+port/
+
+# Ignore description file
+port_folder_description.txt
+
+# Python dependencies
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/env/
+backend/.venv/
+
+# Node.js dependencies
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+
+# Environment variables
+backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Automation scripts (Windows-specific)
+*.bat
+*.ps1
+
+# Common files to ignore
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.temp
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
