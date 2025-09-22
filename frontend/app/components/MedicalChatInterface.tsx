@@ -187,7 +187,7 @@ export default function MedicalChatInterface({
           <div>
             <h3 className="font-medium text-green-900">🏥 {filename}</h3>
             <p className="text-sm text-green-700">
-              {pages} pages • {chunks} text chunks • Category: {category || 'Pending categorization'}
+              {pages} pages • {chunks} text chunks • Category: {category || 'Pending Categorization'}
             </p>
           </div>
           <div className="flex space-x-2">

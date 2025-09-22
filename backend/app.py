@@ -76,14 +76,30 @@ text_splitter = RecursiveCharacterTextSplitter(
 def save_vector_store(filename: str, vector_store: FAISS):
     """Save vector store to file"""
     file_path = os.path.join(STORAGE_DIR, f"{filename}_vector.pkl")
+    # Save FAISS index and vectors separately to avoid thread lock issues
+    index_data = {
+        'index': vector_store.index,
+        'docstore': vector_store.docstore,
+        'index_to_docstore_id': vector_store.index_to_docstore_id
+    }
     with open(file_path, 'wb') as f:
-        pickle.dump(vector_store, f)
+        pickle.dump(index_data, f)
 
 def load_vector_store(filename: str) -> FAISS:
     """Load vector store from file"""
     file_path = os.path.join(STORAGE_DIR, f"{filename}_vector.pkl")
     with open(file_path, 'rb') as f:
-        return pickle.load(f)
+        index_data = pickle.load(f)
+    
+    # Reconstruct FAISS vector store properly
+    vector_store = FAISS(
+        embedding_function=embeddings,
+        index=index_data['index'],
+        docstore=index_data['docstore'],
+        index_to_docstore_id=index_data['index_to_docstore_id']
+    )
+    
+    return vector_store
 
 def save_document_info(filename: str, doc_info: Dict[str, Any]):
     """Save document info to file"""
@@ -334,7 +350,7 @@ async def query_pdf_stream(request: PDFQueryRequest):
         vector_store = pdf_vector_store[request.filename]
         
         # Search for relevant chunks
-        docs = vector_store.similarity_search(request.question, k=3)
+        docs = vector_store.similarity_search(request.question, k=5)
         
         # Prepare context from relevant chunks
         context = "\n\n".join([doc.page_content for doc in docs])
@@ -556,7 +572,7 @@ async def query_medical_document_stream(request: MedicalQueryRequest):
         doc_info = load_document_info(request.filename)
         
         # Search for relevant chunks
-        docs = vector_store.similarity_search(request.question, k=3)
+        docs = vector_store.similarity_search(request.question, k=5)
         
         # Prepare context from relevant chunks
         context = "\n\n".join([doc.page_content for doc in docs])
@@ -596,19 +612,15 @@ async def query_medical_document_stream(request: MedicalQueryRequest):
                     # We have relevant context, implement medical logic
                     # First, categorize if this is the first question
                     if not doc_info["category"]:
-                        category_prompt = f"""Based on the following medical document content and the user's question, categorize this document into one of these categories:
-{', '.join(MEDICAL_CATEGORIES)}
-
-Document content sample: {context[:500]}...
-User question: {request.question}
-
-Respond with only the category name."""
+                        category_prompt = f"""Categorize this medical document: {context[:400]}
+Categories: {', '.join(MEDICAL_CATEGORIES)}
+Answer:"""
                         
                         category_response = openai_client.chat.completions.create(
-                            model="gpt-3.5-turbo",
+                            model="gpt-4o-mini",
                             messages=[{"role": "user", "content": category_prompt}],
-                            temperature=0.3,
-                            max_tokens=50
+                            temperature=0.7,
+                            max_tokens=20
                         )
                         
                         category = category_response.choices[0].message.content.strip()
