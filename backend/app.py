@@ -549,6 +549,7 @@ Answer:"""
             "pages": pages,
             "chunks": len(texts),
             "category": category,  # Set immediately
+            "full_text": pdf_text,  # Store full text for Vercel simple search
             "conversation_history": []
         }
         save_document_info(file.filename, doc_info)
@@ -592,11 +593,16 @@ async def query_medical_document_stream(request: MedicalQueryRequest):
         vector_store = load_vector_store(request.filename)
         doc_info = load_document_info(request.filename)
         
-        # Search for relevant chunks
-        docs = vector_store.similarity_search(request.question, k=5)
-        
-        # Prepare context from relevant chunks
-        context = "\n\n".join([doc.page_content for doc in docs])
+        # Search for relevant chunks (skip vector search on Vercel)
+        if os.getenv("VERCEL"):
+            # Simple text search for Vercel
+            pdf_text = doc_info.get("full_text", "")
+            # Use first 1000 characters as context
+            context = pdf_text[:1000] if pdf_text else "No content available"
+        else:
+            # Local: Full vector search
+            docs = vector_store.similarity_search(request.question, k=5)
+            context = "\n\n".join([doc.page_content for doc in docs])
         
         # Create streaming response
         def generate_response() -> AsyncGenerator[str, None]:
