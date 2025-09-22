@@ -772,15 +772,16 @@ Respond with only a number between 0.0 and 1.0."""
                         
                         yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
                 
-                # Store conversation in document info
-                doc_info["conversation_history"].append({
-                    "question": request.question,
-                    "quality_score": quality_score if 'quality_score' in locals() else 0.0,
-                    "timestamp": str(datetime.now())
-                })
-                
-                # Save updated document info back to file
-                save_document_info(request.filename, doc_info)
+                # Store conversation in document info (skip on Vercel for performance)
+                if not os.getenv("VERCEL"):
+                    doc_info["conversation_history"].append({
+                        "question": request.question,
+                        "quality_score": quality_score if 'quality_score' in locals() else 0.0,
+                        "timestamp": str(datetime.now())
+                    })
+                    
+                    # Save updated document info back to file
+                    save_document_info(request.filename, doc_info)
                 
             except Exception as e:
                 error_msg = f"Error in OpenAI API: {str(e)}"
