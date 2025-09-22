@@ -521,23 +521,26 @@ async def upload_medical_document(file: UploadFile = File(...)):
         # Create vector store
         vector_store = FAISS.from_documents(documents, embeddings)
         
-        # Categorize immediately during upload
-        # Use first chunk of PDF content for categorization
-        first_chunk = texts[0][:400] if texts else ""
-        category_prompt = f"""Categorize this medical document: {first_chunk}
+        # Categorize immediately during upload (skip on Vercel for performance)
+        if os.getenv("VERCEL"):
+            category = "Medical Document"  # Default category on Vercel
+        else:
+            # Local development - categorize with AI
+            first_chunk = texts[0][:400] if texts else ""
+            category_prompt = f"""Categorize this medical document: {first_chunk}
 Categories: {', '.join(MEDICAL_CATEGORIES)}
 Answer:"""
-        
-        category_response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": category_prompt}],
-            temperature=0.7,
-            max_tokens=20
-        )
-        
-        category = category_response.choices[0].message.content.strip()
-        if category not in MEDICAL_CATEGORIES:
-            category = "Others"
+            
+            category_response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": category_prompt}],
+                temperature=0.7,
+                max_tokens=20
+            )
+            
+            category = category_response.choices[0].message.content.strip()
+            if category not in MEDICAL_CATEGORIES:
+                category = "Others"
         
         # Store vector store and document info to files
         save_vector_store(file.filename, vector_store)
