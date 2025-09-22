@@ -223,7 +223,8 @@ async def chat_stream(request: ChatRequest):
                     messages=messages,
                     stream=True,
                     temperature=0.7,
-                    max_tokens=1000
+                    max_tokens=1000,
+                    timeout=30  # 30 second timeout
                 )
                 
                 for chunk in stream:
