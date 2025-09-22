@@ -104,6 +104,40 @@ Frontend runs on: http://localhost:3000
 - `GET /api/debug` - Environment variables status
 - `POST /api/chat` - Streaming chat endpoint
 
+## 📄 Medical Document Export/Import Guide
+
+### How to Use Export/Import Feature
+
+#### **Export Process (Local Only):**
+1. **Upload medical document** → PDF gets processed
+2. **Ask questions** → Build conversation history
+3. **Click "Export JSON"** → Download conversation file
+4. **File contains:** Questions, responses (100 words max), metadata
+
+#### **Import Process (Local Only):**
+1. **Return to page** → Upload same PDF again
+2. **Click "Import JSON"** → Select exported file
+3. **Conversation restored** → Continue where you left off
+4. **Fresh start** → Previous conversation replaced (no merge)
+
+#### **What Gets Restored:**
+- ✅ **Conversation history** → Previous Q&A available to ChatGPT
+- ✅ **Document context** → PDF search capability restored
+- ✅ **Full context** → Both PDF and conversation history
+
+#### **Workflow Example:**
+```
+Day 1: Upload PDF → Ask 5 questions → Export JSON
+Day 2: Upload same PDF → Import JSON → Ask "What did we discuss about symptoms?"
+       → ChatGPT knows previous conversation!
+```
+
+#### **Important Notes:**
+- **Export/Import only works locally** (not on Vercel)
+- **Must re-upload PDF** before importing
+- **Small JSON files** (only conversation, not PDF content)
+- **100-word response limit** for storage efficiency
+
 ## 🎯 Next Steps (Phase 2)
 
 - PDF upload functionality

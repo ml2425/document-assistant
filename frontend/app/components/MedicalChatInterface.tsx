@@ -16,6 +16,7 @@ interface MedicalChatInterfaceProps {
   category: string
   onExport: () => void
   onImport: (data: any) => void
+  onNewUpload: () => void
 }
 
 export default function MedicalChatInterface({ 
@@ -24,7 +25,8 @@ export default function MedicalChatInterface({
   chunks, 
   category, 
   onExport,
-  onImport
+  onImport,
+  onNewUpload
 }: MedicalChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -202,6 +204,12 @@ export default function MedicalChatInterface({
               className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
             >
               Import JSON
+            </button>
+            <button
+              onClick={onNewUpload}
+              className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 transition-colors"
+            >
+              New Upload
             </button>
             <button
               onClick={clearChat}

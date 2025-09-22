@@ -48,6 +48,12 @@ export default function Home() {
     setActiveTab('medical')
   }
 
+  const handleNewMedicalUpload = () => {
+    // Clear existing medical data to start fresh
+    setMedicalData(null)
+    setUploadError(null)
+  }
+
   const handleMedicalUploadError = (error: string) => {
     setUploadError(error)
   }
@@ -205,6 +211,7 @@ export default function Home() {
                   category={medicalData.category}
                   onExport={() => setShowExportModal(true)}
                   onImport={handleImport}
+                  onNewUpload={handleNewMedicalUpload}
                 />
               )}
             </>

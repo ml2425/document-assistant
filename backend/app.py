@@ -671,12 +671,21 @@ Respond with only a number between 0.0 and 1.0."""
                             {
                                 "role": "system",
                                 "content": "You are a medical assistant. Answer based on the provided medical document content. Include appropriate medical disclaimers."
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}\n\nNote: This analysis is based on the uploaded medical document and should not replace professional medical advice."
                             }
                         ]
+                        
+                        # Add conversation history (last 5 exchanges)
+                        recent_history = doc_info["conversation_history"][-5:] if doc_info["conversation_history"] else []
+                        for conv in recent_history:
+                            messages.append({"role": "user", "content": conv["question"]})
+                            if "response" in conv:
+                                messages.append({"role": "assistant", "content": conv["response"]})
+                        
+                        # Add current question with context
+                        messages.append({
+                            "role": "user",
+                            "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}\n\nNote: This analysis is based on the uploaded medical document and should not replace professional medical advice."
+                        })
                         
                         stream = openai_client.chat.completions.create(
                             model="gpt-3.5-turbo",
@@ -699,12 +708,21 @@ Respond with only a number between 0.0 and 1.0."""
                             {
                                 "role": "system",
                                 "content": "You are a medical assistant. Answer based on the provided medical document content. If the document doesn't have sufficient information, respond with exactly: 'MEDICAL_INSUFFICIENT_INFO' and then provide what information you can from the document."
-                            },
-                            {
-                                "role": "user",
-                                "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}"
                             }
                         ]
+                        
+                        # Add conversation history (last 5 exchanges)
+                        recent_history = doc_info["conversation_history"][-5:] if doc_info["conversation_history"] else []
+                        for conv in recent_history:
+                            messages.append({"role": "user", "content": conv["question"]})
+                            if "response" in conv:
+                                messages.append({"role": "assistant", "content": conv["response"]})
+                        
+                        # Add current question with context
+                        messages.append({
+                            "role": "user",
+                            "content": f"Medical document content:\n{context}\n\nQuestion: {request.question}"
+                        })
                         
                         response = openai_client.chat.completions.create(
                             model="gpt-3.5-turbo",
@@ -751,10 +769,23 @@ Respond with only a number between 0.0 and 1.0."""
                         # Use ChatGPT only
                         messages = [
                             {
-                                "role": "user",
-                                "content": f"Question: {request.question}\n\nNote: This is general medical information and should not replace professional medical advice."
+                                "role": "system",
+                                "content": "You are a medical assistant providing general medical information. This should not replace professional medical advice."
                             }
                         ]
+                        
+                        # Add conversation history (last 5 exchanges)
+                        recent_history = doc_info["conversation_history"][-5:] if doc_info["conversation_history"] else []
+                        for conv in recent_history:
+                            messages.append({"role": "user", "content": conv["question"]})
+                            if "response" in conv:
+                                messages.append({"role": "assistant", "content": conv["response"]})
+                        
+                        # Add current question
+                        messages.append({
+                            "role": "user",
+                            "content": f"Question: {request.question}\n\nNote: This is general medical information and should not replace professional medical advice."
+                        })
                         
                         yield f"data: {json.dumps({'content': '[Note: This answer is from ChatGPT, not from your medical document]\n\n', 'done': False})}\n\n"
                         
@@ -766,23 +797,38 @@ Respond with only a number between 0.0 and 1.0."""
                             max_tokens=1000
                         )
                         
-                        for chunk in stream:
-                            if chunk.choices[0].delta.content is not None:
-                                content = chunk.choices[0].delta.content
-                                yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        # Collect response for storage (skip on Vercel for performance)
+                        full_response = ""
+                        if not os.getenv("VERCEL"):
+                            for chunk in stream:
+                                if chunk.choices[0].delta.content is not None:
+                                    content = chunk.choices[0].delta.content
+                                    full_response += content
+                                    yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
+                        else:
+                            # Vercel: just stream without collecting
+                            for chunk in stream:
+                                if chunk.choices[0].delta.content is not None:
+                                    content = chunk.choices[0].delta.content
+                                    yield f"data: {json.dumps({'content': content, 'done': False})}\n\n"
                         
                         yield f"data: {json.dumps({'content': '', 'done': True})}\n\n"
-                
-                # Store conversation in document info (skip on Vercel for performance)
-                if not os.getenv("VERCEL"):
-                    doc_info["conversation_history"].append({
-                        "question": request.question,
-                        "quality_score": quality_score if 'quality_score' in locals() else 0.0,
-                        "timestamp": str(datetime.now())
-                    })
-                    
-                    # Save updated document info back to file
-                    save_document_info(request.filename, doc_info)
+                        
+                        # Store conversation (local only)
+                        if not os.getenv("VERCEL"):
+                            # Limit response to 100 words
+                            response_words = full_response.split()[:100]
+                            limited_response = " ".join(response_words)
+                            
+                            doc_info["conversation_history"].append({
+                                "question": request.question,
+                                "response": limited_response,
+                                "quality_score": quality_score if 'quality_score' in locals() else 0.0,
+                                "timestamp": str(datetime.now())
+                            })
+                            
+                            # Save updated document info back to file
+                            save_document_info(request.filename, doc_info)
                 
             except Exception as e:
                 error_msg = f"Error in OpenAI API: {str(e)}"
@@ -912,7 +958,7 @@ async def import_medical_document(request: MedicalImportRequest):
             "pages": 0,  # Unknown for imported documents
             "chunks": len(texts),
             "category": "Imported Document",
-            "conversation_history": request.conversation_history,
+            "conversation_history": request.conversation_history,  # Fresh start - replace existing
             "imported": True,
             "title": request.title,
             "journal_source": request.journal_source
