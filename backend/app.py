@@ -633,25 +633,29 @@ async def query_medical_document_stream(request: MedicalQueryRequest):
                     # We have relevant context, implement medical logic
                     # Category already set during upload
                     
-                    # Now assess quality and respond
-                    quality_prompt = f"""Rate the semantic similarity between the document content and the user's question on a scale of 0.0 to 1.0.
+                    # Skip quality assessment on Vercel for performance
+                    if os.getenv("VERCEL"):
+                        quality_score = 0.7  # Default to "good" on Vercel
+                    else:
+                        # Local development - assess quality
+                        quality_prompt = f"""Rate the semantic similarity between the document content and the user's question on a scale of 0.0 to 1.0.
 
 Document content: {context}
 User question: {request.question}
 
 Respond with only a number between 0.0 and 1.0."""
-                    
-                    quality_response = openai_client.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=[{"role": "user", "content": quality_prompt}],
-                        temperature=0.1,
-                        max_tokens=10
-                    )
-                    
-                    try:
-                        quality_score = float(quality_response.choices[0].message.content.strip())
-                    except:
-                        quality_score = 0.5  # Default to average
+                        
+                        quality_response = openai_client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[{"role": "user", "content": quality_prompt}],
+                            temperature=0.1,
+                            max_tokens=10
+                        )
+                        
+                        try:
+                            quality_score = float(quality_response.choices[0].message.content.strip())
+                        except:
+                            quality_score = 0.5  # Default to average
                     
                     # Determine response strategy based on quality
                     if quality_score >= 0.7:  # Good
